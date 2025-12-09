@@ -71,7 +71,7 @@ Scraped data appears in the table and can be downloaded as a CSV file.
 
 ---
 
-## 📌 Roadmap (Nest Project)
+## 📌 Roadmap (Next Project)
 - Instagram support  
 - Shopee shop-level and review scraping  
 - TikTok trending feed scraper  
