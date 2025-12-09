@@ -38,7 +38,7 @@ Paste any Shopee product ID or item URL to begin scraping.
 
 ### Step 4 — View & Download Output
 Scraped data appears in the table and can be downloaded as a CSV file.
-![Output Screenshot](https://raw.githubusercontent.com/utadstriker9/media_scrape/main/screenshots/output.png)
+![Output Screenshot](https://raw.githubusercontent.com/utadstriker9/media_scrape/main/screenshots/five.png)
 
 
 ---
