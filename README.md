@@ -24,15 +24,22 @@ http://localhost:8801
 
 ### Step 1 — Open the Shopee Scraper Page
 Navigate to the Shopee scraper section from the sidebar.
+![First Screenshot](https://raw.githubusercontent.com/utadstriker9/media_scrape/main/screenshots/first.png)
 
 ### Step 2 — Login (First-Time Only)
 You will see a login screen (QR or manual login depending on your setup).
+![Second Screenshot](https://raw.githubusercontent.com/utadstriker9/media_scrape/main/screenshots/second.png)
+![Third Screenshot](https://raw.githubusercontent.com/utadstriker9/media_scrape/main/screenshots/third.png)
+
 
 ### Step 3 — Input Product ID or URL
 Paste any Shopee product ID or item URL to begin scraping.
+![FOurth Screenshot](https://raw.githubusercontent.com/utadstriker9/media_scrape/main/screenshots/fourth.png)
 
 ### Step 4 — View & Download Output
 Scraped data appears in the table and can be downloaded as a CSV file.
+![Output Screenshot](https://raw.githubusercontent.com/utadstriker9/media_scrape/main/screenshots/output.png)
+
 
 ---
 
