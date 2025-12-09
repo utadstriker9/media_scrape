@@ -1,0 +1,10 @@
+cd app path
+sudo docker build -f DockerFile -t {image_name} .
+sudo docker run -d -p 8801:8801 --name media_scrape media_scrape
+
+# Delete Images
+sudo docker rmi -f {image_id}
+
+# Delete Container
+sudo docker stop {Container_ID}
+sudo docker rm {Container_ID} / sudo docker rm -f {Container_ID}
