@@ -2,9 +2,7 @@ FROM python:3.11-bookworm
 
 WORKDIR /media_scrape
 
-# --------------------------------------------------------
 # Install system dependencies for Chrome & UC
-# --------------------------------------------------------
 RUN apt-get update && apt-get install -y \
     wget curl gnupg unzip xvfb \
     fonts-liberation fonts-noto-color-emoji \
@@ -13,39 +11,36 @@ RUN apt-get update && apt-get install -y \
     libxkbcommon0 libxrandr2 libxshmfence1 libxext6 \
     libx11-6 libxcb1 libxrender1 libpango-1.0-0 \
     libcups2 libcairo2 libvulkan1 xdg-utils \
+    libxi6 libgconf-2-4 libdrm2 libgtk-3-0 libnspr4 \
     && rm -rf /var/lib/apt/lists/*
 
-# --------------------------------------------------------
-# Install latest Google Chrome directly
-# UC works best with Chrome, not Chromium
-# --------------------------------------------------------
 RUN wget -q -O /tmp/chrome.deb \
     https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
     && apt-get update && apt-get install -y /tmp/chrome.deb \
-    && rm /tmp/chrome.deb
+    && rm /tmp/chrome.deb \
+    && rm -rf /var/lib/apt/lists/*
 
-# --------------------------------------------------------
-# Create session directory for persistent Shopee login
-# --------------------------------------------------------
-RUN mkdir -p /media_scrape/output/shopee_sessions
+# Verify Chrome installation
+RUN google-chrome --version
 
-# --------------------------------------------------------
-# Copy code
-# --------------------------------------------------------
+RUN mkdir -p /media_scrape/output/shopee_sessions \
+    && chmod -R 777 /media_scrape/output
+
 COPY . .
 
-# --------------------------------------------------------
-# Install Python dependencies
-# --------------------------------------------------------
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir --upgrade undetected-chromedriver
 
+ENV CHROME_BIN=/usr/bin/google-chrome
+ENV DISPLAY=:99
+ENV STREAMLIT_SERVER_PORT=8801
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+ENV STREAMLIT_SERVER_HEADLESS=true
+
 EXPOSE 8801
 
-# --------------------------------------------------------
 # Streamlit healthcheck + entry point
-# --------------------------------------------------------
 HEALTHCHECK CMD curl --fail http://localhost:8801/_stcore/health
 
 ENTRYPOINT ["streamlit", "run", "streamlit_main.py", "--server.port=8801", "--server.address=0.0.0.0"]

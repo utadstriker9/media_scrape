@@ -28,7 +28,7 @@ main_folder = os.path.dirname(current_script_path)
 session_path = os.path.join(main_folder, 'output', 'shopee_sessions')
 cookies_file = os.path.join(main_folder, 'output', 'shopee_cookies.json')
 
-def start_driver(login_mode=False, use_session=False):  # CHANGED: Default to False
+def start_driver(login_mode=False, use_session=False):
     """
     Args:
         login_mode: If True, runs non-headless for QR login
@@ -41,43 +41,118 @@ def start_driver(login_mode=False, use_session=False):  # CHANGED: Default to Fa
         options.add_argument(f"--user-data-dir={session_path}")
         options.add_argument("--profile-directory=Default")
 
+    # Essential Docker compatibility flags
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-setuid-sandbox")
-    options.add_argument("--disable-features=VizDisplayCompositor")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--window-size=1366,768")
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-software-rasterizer")
-    options.add_argument("--single-process")  
-    options.add_argument("--no-zygote") 
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-features=VizDisplayCompositor")
     
-    # User agent
+    # Better for Docker
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--start-maximized")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument("--disable-infobars")
+    options.add_argument("--disable-notifications")
+    
+    # Anti-detection flags
+    options.add_argument("--disable-web-security")
+    options.add_argument("--allow-running-insecure-content")
+    
+    # Remote debugging (helpful for troubleshooting)
+    options.add_argument("--remote-debugging-port=9222")
+    
+    # Realistic user agent with recent Chrome version
     options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                      "AppleWebKit/537.36 (KHTML, like Gecko) "
-                     "Chrome/120.0.0.0 Safari/537.36")
+                     "Chrome/131.0.0.0 Safari/537.36")
+    
+    # Additional preferences to avoid detection
+    prefs = {
+        "credentials_enable_service": False,
+        "profile.password_manager_enabled": False,
+        "profile.default_content_setting_values.notifications": 2,
+    }
+    options.add_experimental_option("prefs", prefs)
+    # REMOVED: excludeSwitches and useAutomationExtension - causes errors with UC
     
     # Headless only for scraping mode
     if not login_mode:
-        options.add_argument("--headless=old")
+        options.add_argument("--headless=new")
+    
+    # Force Chrome binary location (Docker)
+    chrome_bin = os.environ.get('CHROME_BIN', '/usr/bin/google-chrome')
+    if os.path.exists(chrome_bin):
+        options.binary_location = chrome_bin
+    elif os.path.exists('/usr/bin/google-chrome-stable'):
+        options.binary_location = '/usr/bin/google-chrome-stable'
 
     try:
         driver = uc.Chrome(
             options=options,
-            use_subprocess=False, 
-            version_main=None,
-            driver_executable_path=None, 
-        )
-        return driver
-    except Exception as e:
-        print(f"❌ Error starting Chrome: {e}")
-        options.binary_location = "/usr/bin/google-chrome-stable"
-        driver = uc.Chrome(
-            options=options,
             use_subprocess=False,
             version_main=None,
+            driver_executable_path=None,
         )
+        
+        # Execute anti-detection JavaScript AFTER driver is created
+        try:
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": """
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en', 'id']
+                    });
+                    window.chrome = {
+                        runtime: {}
+                    };
+                    Object.defineProperty(navigator, 'permissions', {
+                        get: () => ({
+                            query: () => Promise.resolve({ state: 'granted' })
+                        })
+                    });
+                """
+            })
+        except Exception as cdp_error:
+            st.warning(f"⚠️ Could not inject anti-detection JS: {cdp_error}")
+        
+        # Set page load timeout
+        driver.set_page_load_timeout(30)
+        
         return driver
+    except Exception as e:
+        st.error(f"❌ Error starting Chrome: {e}")
+        # Fallback: try with minimal options
+        try:
+            fallback_options = uc.ChromeOptions()
+            fallback_options.add_argument("--no-sandbox")
+            fallback_options.add_argument("--disable-dev-shm-usage")
+            fallback_options.add_argument("--headless=new")
+            
+            chrome_bin = "/usr/bin/google-chrome"
+            if os.path.exists(chrome_bin):
+                fallback_options.binary_location = chrome_bin
+            
+            driver = uc.Chrome(
+                options=fallback_options,
+                use_subprocess=False,
+                version_main=None,
+            )
+            driver.set_page_load_timeout(30)
+            st.warning("⚠️ Using fallback Chrome options")
+            return driver
+        except Exception as fallback_error:
+            st.error(f"❌ Fallback also failed: {fallback_error}")
+            raise
 
 def save_cookies(driver, filepath=cookies_file):
     cookies = driver.get_cookies()
@@ -89,7 +164,7 @@ def save_cookies(driver, filepath=cookies_file):
     st.write(f"✅ Cookies saved to {filepath}")
     st.write(f"📊 Saved {len(cookies)} cookies")
 
-def load_cookies(driver, filepath=cookies_file):
+def load_cookies(driver, filepath=cookies_file, search_region='shopee.co.id'):
     if not os.path.exists(filepath):
         st.warning(f"⚠️ Cookie file not found: {filepath}")
         return False
@@ -99,8 +174,8 @@ def load_cookies(driver, filepath=cookies_file):
             cookies = json.load(f)
         
         # Navigate to domain first
-        driver.get("https://shopee.co.id")
-        time.sleep(2)
+        driver.get(f"https://{search_region}")
+        time.sleep(3)
         
         loaded_count = 0
         for cookie in cookies:
@@ -116,7 +191,7 @@ def load_cookies(driver, filepath=cookies_file):
         
         st.write(f"✅ Loaded {loaded_count}/{len(cookies)} cookies")
         driver.refresh()
-        time.sleep(2)
+        time.sleep(3)
         return True
     except Exception as e:
         st.error(f"❌ Error loading cookies: {e}")
@@ -157,13 +232,17 @@ def scrapper_shopee():
 
         if search_but:
             st.session_state['pg_step'] = 2
+            st.session_state['search_region'] = search_region
         if example_but:
             st.session_state['pg_step'] = 4
         if test_but:
             st.session_state['pg_step'] = 5
+            st.session_state['search_region'] = search_region
 
     # --- SEARCH RESULT ---
     if st.session_state['pg_step'] == 2:
+        # Get saved search_region
+        search_region = st.session_state.get('search_region', 'shopee.co.id')
 
         if not search_text.strip():
             st.warning(f'Please input {search_param} that you want to search!')
@@ -198,30 +277,84 @@ def scrapper_shopee():
         driver = None
         try:
             with st.spinner("Starting browser..."):
-                driver = start_driver(login_mode=False, use_session=False)  # CHANGED
+                driver = start_driver(login_mode=False, use_session=False)
                 
             with st.spinner("Loading cookies..."):
-                cookie_loaded = load_cookies(driver)
+                cookie_loaded = load_cookies(driver, search_region=search_region)
                 if not cookie_loaded:
                     st.warning("⚠️ No cookies loaded. Login might be required.")
+            
+            # Add random delay to mimic human behavior
+            time.sleep(random.uniform(2, 4))
+            
             product_url = f"https://{search_region}/product-i.{shopid}.{itemid}"
             
             with st.spinner(f"Loading product page..."):
                 driver.get(product_url)
-                time.sleep(8)  # INCREASED wait time
+                
+                # Wait with random intervals like a human
+                time.sleep(random.uniform(5, 8))
+                
+                # Simulate human-like mouse movements (move to random positions)
+                try:
+                    driver.execute_script("""
+                        window.scrollTo(0, Math.floor(Math.random() * 500));
+                    """)
+                    time.sleep(random.uniform(1, 2))
+                    driver.execute_script("""
+                        window.scrollTo(0, 0);
+                    """)
+                except:
+                    pass
             
             # Debug: Show current URL
             current = driver.current_url.lower()
             st.write(f"📍 Current URL: {driver.current_url}")
             
+            # Check for CAPTCHA/verification
+            if "verify" in current or "captcha" in current:
+                st.error("🤖 Bot detection triggered! CAPTCHA page detected.")
+                
+                
+                # Save CAPTCHA screenshot
+                try:
+                    screenshot_dir = os.path.join(main_folder, "screenshots")
+                    os.makedirs(screenshot_dir, exist_ok=True)
+                    captcha_screenshot = os.path.join(screenshot_dir, "captcha_page.png")
+                    driver.save_screenshot(captcha_screenshot)
+                    if os.path.exists(captcha_screenshot):
+                        st.image(captcha_screenshot, caption="CAPTCHA detected", width='stretch')
+                except Exception as e:
+                    st.warning(f"Could not save CAPTCHA screenshot: {e}")
+                
+                if driver:
+                    driver.quit()
+                return
+            
             if "buyer/login" in current or "/login" in current:
                 st.error("🔒 Session logged out. Please use 'First Login' button again.")
+                if driver:
+                    driver.quit()
                 return
 
             # Save debug screenshot
-            debug_screenshot = "debug_page.png"
-            driver.save_screenshot(debug_screenshot)
-            st.image(debug_screenshot, caption="Debug: Current page view", use_container_width=True)
+            try:
+                screenshot_dir = os.path.join(main_folder, "screenshots")
+                os.makedirs(screenshot_dir, exist_ok=True)
+                debug_screenshot = os.path.join(screenshot_dir, "debug_page.png")
+                driver.save_screenshot(debug_screenshot)
+                if os.path.exists(debug_screenshot):
+                    st.image(debug_screenshot, caption="Debug: Current page view", width='stretch')
+            except Exception as e:
+                st.warning(f"Could not save screenshot: {e}")
+
+            # Wait for page to fully load
+            try:
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+            except TimeoutException:
+                st.warning("⏱️ Page load timeout, continuing anyway...")
 
             # Try multiple selectors for each field
             result = {
@@ -238,7 +371,9 @@ def scrapper_shopee():
                 "h1.vR6K3w",
                 "h1[class*='attM6y']",
                 "div[class*='_44qnta']",
-                "span.XUNR6d"
+                "span.XUNR6d",
+                "div[data-testid='product-name']",
+                "h1"
             ]
             for selector in title_selectors:
                 try:
@@ -253,7 +388,8 @@ def scrapper_shopee():
             price_selectors = [
                 "div.IZPeQz.B67UQ0",
                 "div[class*='pqTWkA']",
-                "div[class*='_3n5NQx']"
+                "div[class*='_3n5NQx']",
+                "div[data-testid='product-price']"
             ]
             for selector in price_selectors:
                 try:
@@ -267,7 +403,8 @@ def scrapper_shopee():
             # Rating
             rating_selectors = [
                 "div.F9RHbS.dQEiAI.jMXp4d",
-                "div[class*='_3Oj5_n']"
+                "div[class*='_3Oj5_n']",
+                "div[data-testid='rating']"
             ]
             for selector in rating_selectors:
                 try:
@@ -281,7 +418,8 @@ def scrapper_shopee():
             # Shop name
             shop_selectors = [
                 "div.fV3TIn",
-                "div[class*='_3Lybjn']"
+                "div[class*='_3Lybjn']",
+                "div[data-testid='shop-name']"
             ]
             for selector in shop_selectors:
                 try:
@@ -296,7 +434,8 @@ def scrapper_shopee():
             desc_selectors = [
                 "p.QN2lPu",
                 "div[class*='_2u0jt9']",
-                "span[class*='_2JY50F']"
+                "span[class*='_2JY50F']",
+                "div[data-testid='description']"
             ]
             for selector in desc_selectors:
                 try:
@@ -316,9 +455,13 @@ def scrapper_shopee():
                 st.info("💡 Tip: Check the debug screenshot above to see if content loaded properly.")
                 
                 # Save page source for debugging
-                with open("debug_source.html", "w", encoding="utf-8") as f:
-                    f.write(driver.page_source)
-                st.write("📄 Page source saved to debug_source.html for inspection")
+                try:
+                    debug_source = os.path.join(main_folder, "output", "debug_source.html")
+                    with open(debug_source, "w", encoding="utf-8") as f:
+                        f.write(driver.page_source)
+                    st.write("📄 Page source saved to output/debug_source.html for inspection")
+                except Exception as e:
+                    st.warning(f"Could not save page source: {e}")
             else:
                 st.success("✅ Data scraped successfully!")
         
@@ -339,6 +482,8 @@ def scrapper_shopee():
             st.error(f"❌ WebDriver error: {e}")
         except Exception as e:
             st.error(f"❌ Unexpected error: {e}")
+            import traceback
+            st.code(traceback.format_exc())
         finally:
             if driver:
                 try:
@@ -361,7 +506,20 @@ def scrapper_shopee():
 
     if st.session_state['pg_step'] == 5:
         def do_login_flow():
+            # Get saved search_region
+            search_region = st.session_state.get('search_region', 'shopee.co.id')
+            
             st.subheader("🔐 Shopee Login (QR Code)")
+            
+            st.warning("⚠️ **Docker Note**: QR login requires GUI access. For Docker:")
+            st.info("""
+            **Option 1 (Recommended)**: 
+            - Run login locally first
+            - Copy `output/shopee_cookies.json` to Docker volume
+            
+            **Option 2**: 
+            - Use X11 forwarding (Linux) or VNC (complex setup)
+            """)
 
             driver = None
             try:
@@ -369,16 +527,19 @@ def scrapper_shopee():
                     driver = start_driver(login_mode=True, use_session=False)
                 
                 LOGIN_QR_URL = (
-                    "https://shopee.co.id/buyer/login/qr?"
-                    "next=https%3A%2F%2Fshopee.co.id%2F"
+                    f"https://{search_region}/buyer/login/qr?"
+                    f"next=https%3A%2F%2F{search_region}%2F"
                 )
                 driver.get(LOGIN_QR_URL)
                 time.sleep(15)
 
                 # Show screenshot in UI
-                screenshot_path = "qr_fullpage.png"
+                screenshot_dir = os.path.join(main_folder, "screenshots")
+                os.makedirs(screenshot_dir, exist_ok=True)
+                screenshot_path = os.path.join(screenshot_dir, "qr_fullpage.png")
                 driver.save_screenshot(screenshot_path)
-                st.image(screenshot_path, caption="📱 Scan this QR code with Shopee App", use_container_width=True)
+                if os.path.exists(screenshot_path):
+                    st.image(screenshot_path, caption="📱 Scan this QR code with Shopee App", width='stretch')
 
                 st.info("⏳ Waiting for login... (90 sec timeout)")
 
@@ -407,10 +568,15 @@ def scrapper_shopee():
 
             except Exception as e:
                 st.error(f"❌ Login failed: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
             finally:
                 if driver:
-                    driver.quit()
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
 
             st.session_state['pg_step'] = 1
             time.sleep(2)
