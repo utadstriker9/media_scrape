@@ -26,7 +26,38 @@ import re, base64, time
 current_script_path = os.path.abspath(__file__)
 main_folder = os.path.dirname(current_script_path)
 session_path = os.path.join(main_folder, 'output', 'shopee_sessions')
+
+def get_cookies_file(region='shopee.co.id'):
+    safe_region = region.replace('.', '_')
+    return os.path.join(main_folder, 'output', f'shopee_cookies_{safe_region}.json')
+
+# Kept for backward compat — old single-file sessions
 cookies_file = os.path.join(main_folder, 'output', 'shopee_cookies.json')
+
+SHOPEE_AUTH_COOKIES = ('SPC_EC', 'SPC_ST', 'SPC_CDS_VER', 'SPC_U')
+
+def is_session_valid(region='shopee.co.id'):
+    """Return True if the saved cookies for this region still have valid auth tokens."""
+    filepath = get_cookies_file(region)
+    # Fallback: also check legacy single-file
+    if not os.path.exists(filepath) and os.path.exists(cookies_file):
+        filepath = cookies_file
+    if not os.path.exists(filepath):
+        return False
+    try:
+        with open(filepath) as f:
+            all_cookies = json.load(f)
+        now = time.time()
+        auth = {c['name']: c for c in all_cookies if c['name'] in SHOPEE_AUTH_COOKIES}
+        if not auth:
+            return False
+        for name, c in auth.items():
+            expiry = c.get('expiry')
+            if expiry and expiry < now:
+                return False
+        return True
+    except Exception:
+        return False
 
 def start_driver(login_mode=False, use_session=False):
     """
@@ -62,9 +93,6 @@ def start_driver(login_mode=False, use_session=False):
     # Anti-detection flags
     options.add_argument("--disable-web-security")
     options.add_argument("--allow-running-insecure-content")
-    
-    # Remote debugging (helpful for troubleshooting)
-    options.add_argument("--remote-debugging-port=9222")
     
     # Realistic user agent with recent Chrome version
     options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -154,42 +182,58 @@ def start_driver(login_mode=False, use_session=False):
             st.error(f"❌ Fallback also failed: {fallback_error}")
             raise
 
-def save_cookies(driver, filepath=cookies_file):
+def save_cookies(driver, region='shopee.co.id'):
+    filepath = get_cookies_file(region)
     cookies = driver.get_cookies()
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    
     with open(filepath, 'w') as f:
         json.dump(cookies, f, indent=2)
-    
-    st.write(f"✅ Cookies saved to {filepath}")
-    st.write(f"📊 Saved {len(cookies)} cookies")
+    st.write(f"✅ Cookies saved → {filepath}")
+    st.write(f"📊 {len(cookies)} cookies saved for region: {region}")
 
-def load_cookies(driver, filepath=cookies_file, search_region='shopee.co.id'):
+def load_cookies(driver, search_region='shopee.co.id'):
+    filepath = get_cookies_file(search_region)
+    # Fallback to legacy single file
+    if not os.path.exists(filepath) and os.path.exists(cookies_file):
+        st.warning("⚠️ Using legacy cookie file — re-login to create region-specific cookies.")
+        filepath = cookies_file
     if not os.path.exists(filepath):
-        st.warning(f"⚠️ Cookie file not found: {filepath}")
+        st.warning(f"⚠️ No cookie file for region: {search_region}")
         return False
-    
     try:
         with open(filepath, 'r') as f:
-            cookies = json.load(f)
-        
-        # Navigate to domain first
+            all_cookies = json.load(f)
+
+        now = time.time()
+        # Warn if auth cookies are already expired
+        auth_expired = [
+            c['name'] for c in all_cookies
+            if c['name'] in SHOPEE_AUTH_COOKIES and c.get('expiry', now + 1) < now
+        ]
+        if auth_expired:
+            st.warning(f"⚠️ Expired auth cookies detected: {auth_expired}. Please re-login.")
+            return False
+
         driver.get(f"https://{search_region}")
         time.sleep(3)
-        
+
         loaded_count = 0
-        for cookie in cookies:
-            # Remove problematic fields
+        for cookie in all_cookies:
             cookie.pop('sameSite', None)
-            cookie.pop('expiry', None)
-            
+            # Keep expiry so browser respects it; only remove if it would cause an add_cookie error
             try:
                 driver.add_cookie(cookie)
                 loaded_count += 1
             except Exception as e:
-                st.write(f"⚠️ Could not add cookie {cookie.get('name')}: {e}")
-        
-        st.write(f"✅ Loaded {loaded_count}/{len(cookies)} cookies")
+                # Retry without expiry field if it caused the error
+                cookie.pop('expiry', None)
+                try:
+                    driver.add_cookie(cookie)
+                    loaded_count += 1
+                except Exception:
+                    st.write(f"⚠️ Skipped cookie {cookie.get('name')}: {e}")
+
+        st.write(f"✅ Loaded {loaded_count}/{len(all_cookies)} cookies")
         driver.refresh()
         time.sleep(3)
         return True
@@ -274,15 +318,38 @@ def scrapper_shopee():
         st.success(f"✅ Extracted IDs → shopid: {shopid}, itemid: {itemid}")
         st.divider()
         
+        # Fast-fail: check expiry before launching a browser at all
+        if not is_session_valid(search_region):
+            st.error("🔒 Session expired or missing for this region. Please use 'First Login' to re-authenticate.")
+            return
+
         driver = None
         try:
             with st.spinner("Starting browser..."):
                 driver = start_driver(login_mode=False, use_session=False)
-                
+
             with st.spinner("Loading cookies..."):
                 cookie_loaded = load_cookies(driver, search_region=search_region)
                 if not cookie_loaded:
                     st.warning("⚠️ No cookies loaded. Login might be required.")
+
+            # Lightweight session health check: hit the user profile API
+            with st.spinner("Verifying session..."):
+                try:
+                    driver.get(f"https://{search_region}/api/v4/account/basic/get_username_info")
+                    time.sleep(2)
+                    page_src = driver.page_source
+                    if '"error":0' in page_src or '"username"' in page_src:
+                        st.success("✅ Session active.")
+                    elif '"error":4' in page_src or 'login' in driver.current_url.lower():
+                        st.error("🔒 Session invalid. Please use 'First Login' again.")
+                        if driver:
+                            driver.quit()
+                        return
+                    else:
+                        st.warning("⚠️ Session status unclear, proceeding anyway.")
+                except Exception:
+                    st.warning("⚠️ Could not verify session, proceeding anyway.")
             
             # Add random delay to mimic human behavior
             time.sleep(random.uniform(2, 4))
@@ -512,12 +579,12 @@ def scrapper_shopee():
             st.subheader("🔐 Shopee Login (QR Code)")
             
             st.warning("⚠️ **Docker Note**: QR login requires GUI access. For Docker:")
-            st.info("""
-            **Option 1 (Recommended)**: 
+            st.info(f"""
+            **Option 1 (Recommended)**:
             - Run login locally first
-            - Copy `output/shopee_cookies.json` to Docker volume
-            
-            **Option 2**: 
+            - Copy `output/shopee_cookies_{search_region.replace('.', '_')}.json` to Docker volume
+
+            **Option 2**:
             - Use X11 forwarding (Linux) or VNC (complex setup)
             """)
 
@@ -561,7 +628,7 @@ def scrapper_shopee():
                     return
 
                 st.success("✅ Login successful!")
-                save_cookies(driver)
+                save_cookies(driver, region=search_region)
                 st.success("🎉 Cookies saved — ready to scrape!")
                 
                 st.info("💡 Now you can use 'Search Data' to scrape products.")

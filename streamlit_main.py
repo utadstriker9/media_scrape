@@ -12,9 +12,9 @@ with st.container():
     col1, col2 = st.columns((4.1,1))
     with col1:
         st.empty()
-        st.caption('Production Version 1')
+        st.caption('Production Version 1.1')
     with col2:
-        st.image('https://gemini.google.com/share/c22135563774',width=230)
+        st.image('mediascrape.png',width=230)
 
 if UNDER_MAINTENANCE == False:
     # Title
