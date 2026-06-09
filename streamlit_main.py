@@ -1,6 +1,7 @@
 import streamlit as st
 from modules.shopee_scrapper import scrapper_shopee
-# from modules.tiktok_scrapper import scrapper_tiktok
+from modules.instagram_scrapper import scrapper_instagram
+from modules.tiktok_scrapper import scrapper_tiktok
 
 # Toggle Maintenance
 UNDER_MAINTENANCE = False
@@ -30,12 +31,11 @@ if UNDER_MAINTENANCE == False:
     st.markdown('<p class="big-font">Media Scrapper</p>', unsafe_allow_html=True)
 
     # Tab
-    tab1,tab2 = st.tabs(['TikTok Scrapper','Shopee Scrapper'])
+    tab1,tab2,tab3 = st.tabs(['TikTok Scrapper','Shopee Scrapper', 'Instagram Scrapper'])
 
     try:    
         with tab1:
-            # scrapper_tiktok()
-            st.write('UNDER MAINTENANCE')
+            scrapper_tiktok()
     except ModuleNotFoundError as err1:
         st.error(err1)
     except Exception as err1:
@@ -49,6 +49,13 @@ if UNDER_MAINTENANCE == False:
     except Exception as err2:
         st.error(err2)
 
+    try:
+        with tab3:
+            scrapper_instagram()
+    except ModuleNotFoundError as err3:
+        st.error(err3)
+    except Exception as err3:
+        st.error(err3)
 
 else:
     #st.header('')

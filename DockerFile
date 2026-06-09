@@ -25,12 +25,6 @@ RUN google-chrome --version
 
 COPY . .
 
-# Create output dirs (must be after COPY so they're not overwritten)
-RUN mkdir -p /media_scrape/modules/output/shopee_sessions \
-    && mkdir -p /media_scrape/modules/screenshots \
-    && chmod -R 777 /media_scrape/modules/output \
-    && chmod -R 777 /media_scrape/modules/screenshots
-
 RUN pip install --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir --upgrade undetected-chromedriver

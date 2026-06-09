@@ -14,12 +14,6 @@ sudo docker run -d \
 # Or use the script:
 bash rerun_app.sh
 
-# ---- Cookie workflow (QR login can't run inside Docker) ----
-# 1. Login locally on Windows:  run streamlit locally → click "First Login" → scan QR
-# 2. Copy the cookie file to the server:
-#    scp modules/output/shopee_cookies_shopee_co_id.json user@server:/path/to/app/modules/output/
-# 3. The volume mount makes Docker pick it up immediately (no rebuild needed)
-
 # Delete image
 sudo docker rmi -f {image_id}
 
@@ -28,3 +22,6 @@ sudo docker stop {container_id}
 sudo docker rm {container_id}
 # or force:
 sudo docker rm -f {container_id}
+
+# Run locally
+streamlit run streamlit_main.py
