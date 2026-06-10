@@ -1,19 +1,16 @@
 import streamlit as st
 
-import os
-import requests as req
 import pandas as pd
-import time
 import logging
 from datetime import datetime
+
+from modules.token_pool import get_active_token, run_scrape, render_token_pool
 
 # Configurations
 ##########################################################################################
 
-ACTOR_ID        = 'shu8hvrXbJbY3Eb9W'
-APIFY_BASE      = 'https://api.apify.com/v2'
-DEFAULT_LIMIT   = 20
-EXHAUSTED_CODES = {401, 402, 429}
+ACTOR_ID      = 'shu8hvrXbJbY3Eb9W'
+DEFAULT_LIMIT = 20
 
 logger = logging.getLogger(__name__)
 
@@ -37,146 +34,10 @@ INPUT_MODE_OPTIONS = {
     "search":     "Search",
 }
 
-# Helpers
+# Output helpers
 ##########################################################################################
 
-def load_tokens(filepath: str) -> list:
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return [line.strip() for line in f if line.strip()]
-    except Exception as e:
-        logger.error("Failed to load tokens from %s: %s", filepath, e)
-        return []
-
-def init_token_pool(filepath: str):
-    tokens = load_tokens(filepath)
-    st.session_state['token_pool']  = tokens
-    st.session_state['token_index'] = 0
-    st.session_state['token_file']  = filepath
-
-def get_active_token() -> str:
-    pool  = st.session_state.get('token_pool', [])
-    index = st.session_state.get('token_index', 0)
-    if not pool or index >= len(pool):
-        return os.environ.get('APIFY_TOKEN', '')
-    return pool[index]
-
-def rotate_token() -> bool:
-    next_index = st.session_state.get('token_index', 0) + 1
-    st.session_state['token_index'] = next_index
-    pool = st.session_state.get('token_pool', [])
-    return next_index < len(pool)
-
-# API
-##########################################################################################
-
-def start_actor_run(actor_input: dict, token: str):
-    url = f'{APIFY_BASE}/acts/{ACTOR_ID}/runs'
-    try:
-        resp = req.post(
-            url,
-            params={'token': token, 'maxTotalChargeUsd': 1.0},
-            json=actor_input,
-            timeout=60,
-        )
-        if resp.status_code in EXHAUSTED_CODES:
-            return None, '__EXHAUSTED__'
-        if resp.status_code == 400:
-            try:
-                msg = resp.json().get('error', {}).get('message', resp.text)
-            except Exception:
-                msg = resp.text
-            return None, f"Invalid actor input: {msg}"
-        if resp.status_code == 404:
-            return None, f"Actor '{ACTOR_ID}' not found — check your access."
-        resp.raise_for_status()
-        run_id = resp.json().get('data', {}).get('id')
-        return run_id, None
-    except req.exceptions.ConnectionError:
-        return None, "Cannot reach Apify API — check your internet connection."
-    except req.exceptions.Timeout:
-        return None, "Apify start-run request timed out."
-    except Exception as e:
-        return None, str(e)
-
-def poll_run(run_id: str, token: str, timeout: int = 360, interval: int = 3):
-    url      = f'{APIFY_BASE}/actor-runs/{run_id}'
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            resp = req.get(url, params={'token': token}, timeout=15)
-            resp.raise_for_status()
-            data   = resp.json().get('data', {})
-            status = data.get('status', '')
-            if status in ('SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT'):
-                return status, data.get('defaultDatasetId'), None
-            time.sleep(interval)
-        except Exception as e:
-            return None, None, str(e)
-    return None, None, f"Polling timed out after {timeout}s — run {run_id} may still be running on Apify."
-
-def fetch_dataset(dataset_id: str, token: str):
-    url = f'{APIFY_BASE}/datasets/{dataset_id}/items'
-    try:
-        resp = req.get(url, params={'token': token, 'format': 'json'}, timeout=30)
-        resp.raise_for_status()
-        return resp.json(), None
-    except Exception as e:
-        return None, str(e)
-
-def run_scrape(actor_input: dict):
-    pool     = st.session_state.get('token_pool', [])
-    attempts = max(len(pool), 1)
-
-    for attempt in range(attempts):
-        token = get_active_token()
-        if not token:
-            return None, "No Apify token available. Load a token file in the panel above."
-
-        run_id, err = start_actor_run(actor_input, token)
-
-        if err == '__EXHAUSTED__':
-            has_next = rotate_token()
-            st.warning(
-                f"Token #{attempt + 1} rate-limited (401/402/429) — "
-                + ("switching to next token..." if has_next else "no more tokens available.")
-            )
-            if not has_next:
-                return None, "All Apify tokens are exhausted."
-            continue
-
-        if err:
-            return None, err
-
-        poll_placeholder = st.empty()
-        poll_placeholder.info(f"Actor run started (ID: `{run_id}`) — waiting for results...")
-
-        status, dataset_id, err = poll_run(run_id, token)
-        poll_placeholder.empty()
-
-        if err:
-            return None, err
-        if status != 'SUCCEEDED':
-            return None, f"Actor run finished with status: **{status}**. Check your Apify console for details."
-
-        items, err = fetch_dataset(dataset_id, token)
-        if err:
-            return None, err
-        if not items:
-            return None, (
-                "Actor succeeded but returned 0 items. "
-                "Check your input URL/search term, or ensure the account/hashtag is public."
-            )
-
-        return items, None
-
-    return None, "All Apify tokens failed."
-
-# Output
-##########################################################################################
-
-def _flatten_item(item: dict) -> dict:
-    """Flatten one JSON item into a plain dict, handling nested lists and dicts."""
+def flatten_item(item: dict) -> dict:
     row = {}
     for k, v in item.items():
         if isinstance(v, list):
@@ -185,10 +46,8 @@ def _flatten_item(item: dict) -> dict:
             elif all(isinstance(x, (str, int, float, bool)) for x in v):
                 row[k] = ', '.join(str(x) for x in v)
             else:
-                # list of dicts (e.g. latestComments, taggedUsers) — store count
                 row[k] = f"[{len(v)} items]"
         elif isinstance(v, dict):
-            # flatten one level: musicInfo_song_name, owner_username, etc.
             for dk, dv in v.items():
                 if not isinstance(dv, (dict, list)):
                     row[f"{k}_{dk}"] = dv
@@ -198,64 +57,20 @@ def _flatten_item(item: dict) -> dict:
             row[k] = v
     return row
 
-
 def items_to_dataframe(items: list) -> pd.DataFrame:
     if not items:
         return pd.DataFrame()
-    return pd.DataFrame([_flatten_item(item) for item in items])
+    return pd.DataFrame([flatten_item(item) for item in items])
 
-# User Interfaces
+# User Interface
 ##########################################################################################
 
 def scrapper_instagram():
-
     if 'ig_pg_step' not in st.session_state:
         st.session_state['ig_pg_step'] = 1
 
-    # Token pool panel
-    pool  = st.session_state.get('token_pool', [])
-    index = st.session_state.get('token_index', 0)
+    render_token_pool('instagram')
 
-    with st.expander("Apify Token Pool", expanded=not get_active_token()):
-        if os.environ.get('APIFY_TOKEN'):
-            st.success("Token loaded from environment variable `APIFY_TOKEN`.")
-        else:
-            default_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                'credentials', 'apify_token.txt',
-            )
-            token_file = st.text_input(
-                "Path to token file (one token per line)",
-                value=st.session_state.get('token_file', default_path),
-                key='ig_token_file_input',
-            )
-            col_load, col_reset = st.columns(2)
-            with col_load:
-                if st.button("Load / Reload Tokens", key='ig_btn_load'):
-                    if token_file:
-                        init_token_pool(token_file)
-                        st.rerun()
-            with col_reset:
-                if pool and st.button("Reset to Token #1", key='ig_btn_reset'):
-                    st.session_state['token_index'] = 0
-                    st.rerun()
-
-            if token_file and st.session_state.get('token_file') != token_file:
-                init_token_pool(token_file)
-
-            pool  = st.session_state.get('token_pool', [])
-            index = st.session_state.get('token_index', 0)
-            if pool:
-                remaining = len(pool) - index
-                st.success(
-                    f"{len(pool)} token(s) loaded "
-                    f"— Active: **#{index + 1}** of {len(pool)} "
-                    f"({remaining} remaining)"
-                )
-            else:
-                st.warning("No tokens loaded. Add a `.txt` file with tokens (one per line) then click Load.")
-
-    # Selectors outside form (rerender on change)
     col1, col2, col3 = st.columns(3)
     with col1:
         input_mode = st.selectbox(
@@ -290,7 +105,18 @@ def scrapper_instagram():
                 disabled=True,
             )
 
-    # Form
+    # Optional Filters
+    newer_than = ''
+
+    with st.expander("Optional Filters", expanded=False):
+        newer_than = st.text_input(
+            "Only posts after (optional)",
+            placeholder="2024-01-01  or  7 days  or  2 months",
+            help="Accepted: YYYY-MM-DD, ISO 8601, or relative like '7 days', '3 months'",
+            key='ig_opt_newer_than',
+        )
+
+    # ── Form ─────────────────────────────────────────────────────────────────────
     with st.form(key='instagram_form'):
         if input_mode == 'directUrls':
             search_input = st.text_area(
@@ -307,27 +133,19 @@ def scrapper_instagram():
                 "Search Query",
                 height=80,
                 placeholder={
-                    'hashtag': "#travel  or  travel  (# is optional)",
+                    'hashtag': "#travel  or  travel",
                     'user':    "natgeo",
                     'place':   "Bali",
                 }.get(search_type, ""),
             )
 
-        col_date, col_limit = st.columns(2)
-        with col_date:
-            newer_than = st.text_input(
-                "Only posts after (optional)",
-                placeholder="2024-01-01  or  7 days  or  2 months",
-                help="Accepted: YYYY-MM-DD, ISO 8601, or relative like '7 days', '3 months'",
-            )
-        with col_limit:
-            results_limit = st.number_input(
-                "Max results",
-                min_value=1,
-                max_value=500,
-                value=DEFAULT_LIMIT,
-                step=10,
-            )
+        results_limit = st.number_input(
+            "Max results",
+            min_value=1,
+            max_value=500,
+            value=DEFAULT_LIMIT,
+            step=10,
+        )
 
         c1, c2 = st.columns([1, 1])
         with c1: search_but  = st.form_submit_button("Scrape Data", width='stretch')
@@ -351,7 +169,6 @@ def scrapper_instagram():
 
     # Results
     if st.session_state['ig_pg_step'] == 2:
-        # Only call the API when the button was just clicked
         if st.session_state.get('ig_scrape_pending', False):
             st.session_state['ig_scrape_pending'] = False
             search_input = st.session_state.get('ig_search_input', '').strip()
@@ -359,7 +176,10 @@ def scrapper_instagram():
             if not search_input:
                 st.warning("Input is empty. Please enter a URL or search query.")
             elif not get_active_token():
-                st.session_state.update({'ig_scrape_results': None, 'ig_scrape_error': "No Apify token available. Load a token file in the panel above."})
+                st.session_state.update({
+                    'ig_scrape_results': None,
+                    'ig_scrape_error':   "No Apify token available. Load a token file in the panel above.",
+                })
             else:
                 input_mode   = st.session_state.get('ig_input_mode', 'directUrls')
                 results_type = st.session_state.get('ig_results_type', 'posts')
@@ -378,11 +198,11 @@ def scrapper_instagram():
                 if newer_than:
                     actor_input['onlyPostsNewerThan'] = newer_than
 
+                hint = "Check your input URL/search term, or ensure the account/hashtag is public."
                 with st.spinner("Running Apify scrape... (typically 30 – 120 s)"):
-                    items, err = run_scrape(actor_input)
+                    items, err = run_scrape(ACTOR_ID, actor_input, hint)
                 st.session_state.update({'ig_scrape_results': items, 'ig_scrape_error': err})
 
-        # Display stored results (no API call on rerender)
         items        = st.session_state.get('ig_scrape_results')
         err          = st.session_state.get('ig_scrape_error')
         input_mode   = st.session_state.get('ig_input_mode', 'directUrls')
@@ -411,17 +231,13 @@ def scrapper_instagram():
 
         df = items_to_dataframe(items)
 
-        # Columns that contain media URLs — collect for the expander
-        media_cols = [c for c in df.columns if c in ('displayUrl', 'videoUrl', 'images', 'thumbnailUrl', 'previewUrl')]
-        # Hide media URL columns from main table (they are long and clutter the view)
+        media_cols   = [c for c in df.columns if c in ('displayUrl', 'videoUrl', 'images', 'thumbnailUrl', 'previewUrl')]
         display_cols = [c for c in df.columns if c not in media_cols]
         st.dataframe(df[display_cols], width='stretch')
 
-        # Media expander
         if media_cols:
             with st.expander(f"Media URLs ({len(df)} items, columns: {', '.join(media_cols)})"):
                 for i, row in df.iterrows():
-                    # Best available label: url > shortCode > index
                     def check_str(v):
                         return str(v) if v and str(v) not in ('None', 'nan', '') else None
                     label = check_str(row.get('url')) or check_str(row.get('shortCode')) or f"Item {i + 1}"
@@ -435,11 +251,9 @@ def scrapper_instagram():
                                     st.write(f"`{col}`: {url.strip()}")
                     st.divider()
 
-        # Raw JSON
-        with st.expander("Raw Apify JSON Response"):
+        with st.expander("JSON Response"):
             st.json(items)
 
-        # CSV download
         csv = df.to_csv(index=False, sep=';')
         st.download_button(
             label=f"Download CSV ({len(df)} rows)",
