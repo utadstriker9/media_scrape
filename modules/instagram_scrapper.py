@@ -116,7 +116,7 @@ def scrapper_instagram():
             key='ig_opt_newer_than',
         )
 
-    # ── Form ─────────────────────────────────────────────────────────────────────
+    # Form
     with st.form(key='instagram_form'):
         if input_mode == 'directUrls':
             search_input = st.text_area(
