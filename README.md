@@ -21,7 +21,7 @@ sudo docker build -f DockerFile -t media_scrape .
 ### 3. Run the Container
 
 ```bash
-sudo docker run -d -p 8801:8801 --name media_scrape --shm-size="2g" -v "$(pwd)/modules/output:/media_scrape/modules/output" media_scrape
+sudo docker run -d -p 8801:8801 --name media_scrape --shm-size="2g" media_scrape
 ```
 
 Or use the shortcut script:
